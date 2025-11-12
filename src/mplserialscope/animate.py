@@ -28,7 +28,7 @@ class MPLAnimator:
         self,
         n_samples,
         fs,
-        signal_header_name="therm",
+        signal_header_names="therm",
         signal_yvals=None,
         bool_header_names=None,
         bool_marker_names=None,
@@ -45,7 +45,7 @@ class MPLAnimator:
         fs : int
             The sampling frequency of the data
 
-        signal_header_name : str
+        signal_header_names : list of str
             The name of the signal, used to parse the correct column from the serial output
 
         signal_yvals : tuple
@@ -69,7 +69,11 @@ class MPLAnimator:
         """
 
         # IO vars
-        self.signal_header_name = signal_header_name
+        self.signal_header_names = (
+            signal_header_names if signal_header_names is not None else []
+        )
+        self.n_signals = len(self.signal_header_names)
+
         self.bool_header_names = (
             bool_header_names if bool_header_names is not None else []
         )
@@ -82,9 +86,9 @@ class MPLAnimator:
 
         # Animator vars
         self.nsamp = n_samples
-        self.current_val = 0
+        self.current_vals = np.zeros((self.n_signals,), dtype="float")
         self.fs = fs
-        self.data = np.zeros((n_samples,), dtype="float")
+        self.data = np.zeros((n_samples, self.n_signals), dtype="float")
         # self.marker_ydata = {name: np.zeros((n_samples), dtype="float") for name in bool_marker_names.keys()} if bool_marker_names else {}
         self.marker_cdata = {name: [None] * n_samples for name in bool_marker_names.keys()} if bool_marker_names else {}
         self.data_head_idx = 0  # to trace out data like an o-scope
@@ -96,6 +100,7 @@ class MPLAnimator:
             self.queue,
             self.fs,
             self.animator_exit_event,
+            self.signal_header_names,
             self.bool_header_names,
             self.bool_marker_names,
             self.text_header_names,
@@ -110,7 +115,7 @@ class MPLAnimator:
 
     @staticmethod
     def get_main_process(
-        data_queue, fs, exit_event, bool_val_names, bool_marker_names, text_val_names, **kwargs
+        data_queue, fs, exit_event, signal_names, bool_val_names, bool_marker_names, text_val_names, **kwargs
     ):
         """Open a blitting animate process.
 
@@ -128,7 +133,7 @@ class MPLAnimator:
         """
         animate_process = Process(
             target=animated_plot_process,
-            args=(data_queue, fs, exit_event, bool_val_names, bool_marker_names, text_val_names),
+            args=(data_queue, fs, exit_event, signal_names, bool_val_names, bool_marker_names, text_val_names),
             kwargs=kwargs,
         )
         return animate_process
@@ -145,15 +150,25 @@ class MPLAnimator:
 
         """
         header_list = [s.strip(" \r\n\t") for s in header.split(",")]
-        self.signal_idx = [
-            i for i, val in enumerate(header_list) if val == self.signal_header_name
-        ]
-        if len(self.signal_idx) == 0:
-            raise ValueError(f"No col in header found for signal {self.signal_header_name}")
-        elif len(self.signal_idx) > 1:
-            raise ValueError(f"Multiple cols in header found for signal {self.signal_header_name}")
+        # self.signal_idx = [
+        #     i for i, val in enumerate(header_list) if val == self.signal_header_names
+        # ]
+        if len(self.signal_header_names) > 0:
+            self.signal_idx = [
+                i
+                for name in self.signal_header_names
+                for i, val in enumerate(header_list)
+                if val == name
+            ]
         else:
-            self.signal_idx = self.signal_idx[0]
+            self.signal_idx = []
+
+        if len(self.signal_idx) == 0:
+            raise ValueError(f"No col in header found for signal {self.signal_header_names}")
+        # elif len(self.signal_idx) > 1:
+        #     raise ValueError(f"Multiple cols in header found for signal {self.signal_header_names}")
+        # else:
+        #     self.signal_idx = self.signal_idx[0]
 
         if self.bool_header_names is not None:
             self.bool_signal_idx = [
@@ -197,10 +212,10 @@ class MPLAnimator:
         """Extract the data from the line and send to the animate process."""
 
         # Extract data from correct index in line
-        self.current_val = np.array(line.split(",")[self.signal_idx], dtype="float")
+        self.current_vals = np.array([line.split(",")[i] for i in self.signal_idx], dtype="float")
 
         # Update vector
-        self.data[self.data_head_idx] = self.current_val
+        self.data[self.data_head_idx] = self.current_vals
 
         # Extract bool vals, if any
         if len(self.bool_signal_idx) > 0:
@@ -216,7 +231,7 @@ class MPLAnimator:
             for i, (name, val) in enumerate(zip(self.bool_marker_names.keys(), bool_marker_vals)):
                 if val:
                     x = self.data_head_idx / self.fs
-                    y = self.current_val
+                    y = self.current_vals[0]
                     self.marker_cdata[name][self.data_head_idx] = (x,y)
                 else:
                     self.marker_cdata[name][self.data_head_idx] = None
@@ -265,6 +280,7 @@ def animated_plot_process(
     data_queue,
     fs,
     exit_event,
+    signal_names,
     bool_val_names,
     bool_marker_names,
     text_val_names,
@@ -277,7 +293,7 @@ def animated_plot_process(
     matplotlib.use("Qt5Agg")
 
     # Prep data vector
-    data = np.zeros((n_samples,))
+    data = np.zeros((n_samples, len(signal_names)), dtype="float")
     # queue_size_readable = True
 
     # Get the current time, for displaying time elapsed on the plot
@@ -290,7 +306,9 @@ def animated_plot_process(
 
     # Add the line for the signal
     xvals = np.arange(n_samples) / fs
-    (ln,) = ax.plot(xvals, data, animated=True, zorder=1e4, color="k")
+    ln = [ax.plot(xvals, dt, animated=True, zorder=1e4, label=name)[0] for dt, name in zip(data.T, signal_names)]
+    ax.legend(handles=ln, loc="upper right")
+    ax.set_xlabel("Time (sec)")
     ax.set_xlim((0, n_samples / fs))
     ax.set_ylim(ylims)
 
@@ -299,7 +317,7 @@ def animated_plot_process(
     for name, color in bool_marker_names.items():
         line = Line2D(
             # [], [],
-            xvals, data,
+            xvals, data[:,0],   
             linestyle="None",
             marker="x",
             markersize=7,
@@ -350,7 +368,7 @@ def animated_plot_process(
     )
 
     # Add all the animated artists to the blit manager
-    bm = BlitManager(fig.canvas, list(bool_marker_lines.values()) + bool_dots + [frame_text, ln])
+    bm = BlitManager(fig.canvas, list(bool_marker_lines.values()) + bool_dots + [frame_text] + ln)
 
     # Make sure our window is on the screen and drawn
     plt.show(block=False)
@@ -370,7 +388,7 @@ def animated_plot_process(
         # Read data from the queue, without blocking.
         # Will raise the "empty" exception if it's empty, or the ValueError exception if it's closed.
         try:
-            signal_vec, bool_vals, text_vals, marker_cdata = data_queue.get(
+            signal_vecs, bool_vals, text_vals, marker_cdata = data_queue.get(
                 timeout=current_timeout
             )  # tuple of (signal vec, bool vals, text vals), or empty if end
             current_timeout = (
@@ -384,8 +402,9 @@ def animated_plot_process(
             break
 
         # Update the animated line
-        ln.set_ydata(signal_vec)
-
+        for i, l in enumerate(ln):
+            l.set_ydata(signal_vecs[:, i])  
+        
         # Update the scatter plot with the signal data
         for name, cdata in marker_cdata.items():
             line = bool_marker_lines[name]
