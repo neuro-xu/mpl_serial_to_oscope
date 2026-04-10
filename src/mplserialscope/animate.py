@@ -29,6 +29,7 @@ class MPLAnimator:
         n_samples,
         fs,
         signal_header_names="therm",
+        signal_scaling=None,
         signal_yvals=None,
         bool_header_names=None,
         bool_marker_names=None,
@@ -83,6 +84,10 @@ class MPLAnimator:
         self.bool_marker_names = (
             bool_marker_names if bool_marker_names is not None else {}
         )
+        if signal_scaling:
+            self.signal_scaling = np.array(signal_scaling)
+        else:
+            self.signal_scaling = np.ones((self.n_signals,))
 
         # Animator vars
         self.nsamp = n_samples
@@ -215,7 +220,7 @@ class MPLAnimator:
         self.current_vals = np.array([line.split(",")[i] for i in self.signal_idx], dtype="float")
 
         # Update vector
-        self.data[self.data_head_idx] = self.current_vals
+        self.data[self.data_head_idx] = self.current_vals * self.signal_scaling
 
         # Extract bool vals, if any
         if len(self.bool_signal_idx) > 0:
